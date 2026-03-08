@@ -1,7 +1,9 @@
 venv
 .env
 db.sqlite3
+API_DOCUMENTATION.md
 __pycache__/
 *.pyc
 *.pyo
 .Python
+API_REFERENCE.md
