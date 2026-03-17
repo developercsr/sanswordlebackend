@@ -7,13 +7,19 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.users.serializers import UserSerializer, UserCreateSerializer, UserUpdateSerializer
 from apps.users.permissions import CanManageUsers
-from apps.users.hierarchy import can_manage, get_role_level, ROLE_LEVEL
+from apps.users.hierarchy import can_manage, get_role_level, assignable_roles, ROLE_LEVEL
+from apps.words.models import Word
+from apps.words.serializers import _parse_list_string
 from core.utils import success_response
+from apps.words.models import Word
+from apps.words.serializers import _parse_list_string
 
 User = get_user_model()
 
@@ -102,3 +108,170 @@ class UserDetailView(APIView):
         user.save()
         serializer = UserSerializer(user)
         return Response(success_response(serializer.data, "User removed successfully"), status=status.HTTP_200_OK)
+
+
+class SimpleUserCreateView(APIView):
+    """
+    POST /api/users/create
+    Lightweight create endpoint used by AddStaff page.
+    Expects: username (email), password, role.
+    """
+    permission_classes = [IsAuthenticated, CanManageUsers]
+
+    def post(self, request):
+        data = request.data.copy()
+        # Map 'username' from frontend to email/full_name for our model
+        username = data.get('username') or ''
+        if username:
+          data.setdefault('email', username)
+          data.setdefault('full_name', username)
+        serializer = UserCreateSerializer(data=data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {"status": "success", "message": "User created successfully"},
+                status=status.HTTP_201_CREATED,
+            )
+        return Response(
+            {"status": "error", "message": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class MyUsersView(APIView):
+    """
+    GET /api/users/my-users
+    Returns users created_by = current user.
+    """
+    permission_classes = [IsAuthenticated, CanManageUsers]
+
+    def get(self, request):
+        users = User.objects.filter(created_by=request.user).order_by('-created_at')
+        data = [
+            {
+                "id": u.id,
+                "username": u.email,
+                "role": u.role,
+                "created_time": u.created_at,
+            }
+            for u in users
+        ]
+        return Response({"users": data})
+
+
+class UpdateUserRoleView(APIView):
+    """
+    POST /api/users/update-role
+    Allows creator to change role of a user they created, respecting hierarchy.
+    """
+    permission_classes = [IsAuthenticated, CanManageUsers]
+
+    def post(self, request):
+        user_id = request.data.get("user_id")
+        new_role = request.data.get("role")
+        if not user_id or not new_role:
+            return Response(
+                {"status": "error", "message": "user_id and role are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = User.objects.filter(pk=user_id, created_by=request.user).first()
+        if not user:
+            return Response(
+                {"status": "error", "message": "User not found or not created by you"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        # Enforce hierarchy: actor must be able to assign this role
+        if new_role == "admin" or not assignable_roles(request.user) or new_role not in assignable_roles(
+            request.user
+        ):
+            return Response(
+                {"status": "error", "message": "You cannot assign this role"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        user.role = new_role
+        user.save(update_fields=["role"])
+        return Response({"status": "success", "message": "Role updated successfully"})
+
+
+class WordActivityView(APIView):
+    """
+    GET /api/users/activity or /api/users/word-activity
+    Query params:
+      - activity_type: "uploaded", "checked", or "users_added"
+      - username: partial or full email to match
+    Only accessible by admin and word_manager.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        activity_type = request.query_params.get("activity_type")
+        username = request.query_params.get("username")
+
+        if activity_type not in ("uploaded", "checked", "users_added") or not username:
+            return Response(
+                {
+                    "detail": "Query parameters 'activity_type' (uploaded|checked|users_added) and 'username' are required"
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        role = getattr(request.user, "role", None)
+        if role not in ("admin", "word_manager"):
+            msg = (
+                "Permission denied for this activity."
+                if activity_type == "users_added"
+                else "You do not have permission to view this feature"
+            )
+            return Response({"detail": msg}, status=status.HTTP_403_FORBIDDEN)
+
+        username = username.strip()
+        if activity_type == "users_added":
+            users_qs = User.objects.filter(created_by__email__icontains=username).order_by(
+                "-created_at"
+            )
+            users_data = [
+                {
+                    "username": u.email,
+                    "role": u.role,
+                    "created_time": u.created_at.date().isoformat() if u.created_at else None,
+                }
+                for u in users_qs
+            ]
+            return Response({"users": users_data})
+
+        qs = Word.objects.all().select_related("uploaded_by", "approved_by")
+
+        if activity_type == "uploaded":
+            qs = qs.filter(uploaded_by__email__icontains=username)
+        else:
+            qs = qs.filter(
+                Q(approved_by__email__icontains=username)
+                | Q(checked_by__email__icontains=username)
+            ).distinct()
+
+        words_data = []
+        for w in qs:
+            class_list = _parse_list_string(w.class_name)
+            chapter_list = _parse_list_string(w.chapter)
+            class_val = class_list[0] if class_list else ""
+            chapter_val = chapter_list[0] if chapter_list else ""
+
+            if w.is_approved:
+                status_label = "approved"
+            elif w.is_rejected:
+                status_label = "rejected"
+            else:
+                status_label = "pending"
+
+            words_data.append(
+                {
+                    "word": w.word,
+                    "meaning": w.meaning,
+                    "class_name": class_val,
+                    "chapter": chapter_val,
+                    "status": status_label,
+                    "date": w.created_at.date().isoformat() if w.created_at else None,
+                }
+            )
+
+        return Response({"words": words_data})

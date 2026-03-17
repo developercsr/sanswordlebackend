@@ -17,7 +17,7 @@ def api_root(request):
                 "auth": "/api/auth/login/ | /api/auth/refresh/",
                 "users": "/api/users/ | /api/users/<id>/",
                 "profile": "/api/profile/",
-                "words": "/api/words/ | /api/words/<id>/ | /api/words/<id>/verify/",
+                "words": "/api/words/ | /api/words/upload/ | /api/words/<id>/ | /api/words/<id>/verify/ | /api/words/excel-template/download/ | /api/words/excel-upload/",
                 "admin": "/admin/"
             }
         }
@@ -31,4 +31,6 @@ urlpatterns = [
     path('api/users/', include('apps.users.urls.users')),
     path('api/profile/', include('apps.users.urls.profile')),
     path('api/words/', include('apps.words.urls')),
+    path('api/checkwords/', include('apps.words.urls_checkwords')),
+    path('api/favorites/', include('apps.favorites.urls')),
 ]

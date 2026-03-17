@@ -29,3 +29,34 @@ class ProfileView(APIView):
             {"success": False, "message": "Validation failed", "data": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST
         )
+
+
+class ProfilePhotoUploadView(APIView):
+    """
+    POST /api/profile/photo
+    Upload and update current user's profile photo.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        file_obj = request.FILES.get("profile_photo")
+        if not file_obj:
+            return Response(
+                {"status": "error", "message": "profile_photo file is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not file_obj.content_type.startswith("image/"):
+            return Response(
+                {"status": "error", "message": "Only image files are allowed"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        user.profile_photo = file_obj
+        user.save(update_fields=["profile_photo"])
+        photo_url = user.profile_photo.url if user.profile_photo else None
+        return Response(
+            {"status": "success", "profile_photo_url": photo_url},
+            status=status.HTTP_200_OK,
+        )
