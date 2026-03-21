@@ -125,7 +125,7 @@ Login request:
 ```json
 POST /api/auth/login/
 {
-  "email": "dhiyotek@gmail.com",
-  "password": "Dhiyo@123"
+  "email": "dhiomXXXXXXXXX",
+  "password": "D23XXXXXXXXX"
 }
 ```
